@@ -23,18 +23,20 @@
 #include <Wire.h>
 #include <Kalman.h>  // Source: https://github.com/TKJElectronics/KalmanFilter
 #define LED 2
+#include "BluetoothSerial.h"
 
 //#define RESTRICT_PITCH // Comment out to restrict roll to ±90deg instead - please read: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf
 
 Kalman kalmanX;  // Create the Kalman instances
 Kalman kalmanY;
-
+BluetoothSerial my_bt;
+char   control = 's';
 
 
 AccelStepper motor_right(AccelStepper::DRIVER, 12, 13);
 AccelStepper motor_left(AccelStepper::DRIVER, 23, 27);
 
-double Kp = 152.5, Ki = 1565.0, Kd = .15;
+double Kp = 152.5, Ki = 1575.0, Kd = .265;
 
 
 /* IMU Data */
@@ -45,8 +47,8 @@ int16_t tempRaw;
 double gyroXangle, gyroYangle;  // Angle calculate using the gyro only
 double compAngleX, compAngleY;  // Calculated angle using a complementary filter
 double kalAngleX, kalAngleY;    // Calculated angle using a Kalman filter
-double pid_output, actual_op = 0, pid_input, setpoint = -1.87f;
-
+double pid_output, actual_op = 0, pid_input, setpoint = -1.87f , fixed_set_point , turn =0 ;
+bool set = false;
 PID myPid(&pid_input, &pid_output, &setpoint, Kp, Ki, Kd, DIRECT);
 
 uint32_t timer;
@@ -58,13 +60,7 @@ hw_timer_t *My_timer = NULL;
 
 
 void IRAM_ATTR onTimer() {
-    myPid.Compute();
-    motor_right.setSpeed(-pid_output);
-    //motor_right.moveTo(test * (200.0 / 360));
-
-    motor_left.setSpeed(pid_output);
-
-    //motor_left.moveTo(test * (200.0 / 360));
+  
 
 }
 
@@ -73,12 +69,13 @@ void IRAM_ATTR onTimer() {
 void setup() {
   Serial.begin(115200);
   Wire.begin();
+  my_bt.begin("Self balance bot");
 
   // pinMode(LED, OUTPUT);
-  // My_timer = timerBegin(0, 80, true);
-  // timerAttachInterrupt(My_timer, &onTimer, true);
-  // timerAlarmWrite(My_timer, 80, true);
-  // timerAlarmEnable(My_timer);  //Just Enable
+  My_timer = timerBegin(0, 80, true);
+  timerAttachInterrupt(My_timer, &onTimer, true);
+  timerAlarmWrite(My_timer, 250000, true);
+  timerAlarmEnable(My_timer);  //Just Enable
 
 
 #if ARDUINO >= 157
@@ -136,13 +133,14 @@ void setup() {
 
   for(int i = 0 ; i < 6 ;i++){
       digitalWrite(2 , i%2);
-      delay(700);
+      delay(1000);
   }
 
   for(int i = 0 ; i < 1000 ; i++){
     setpoint +=setpoint_calc();
   }
   setpoint/=1000;
+  fixed_set_point = setpoint;
 
   for(int i = 0 ; i < 6 ;i++){
       digitalWrite(2 , i%2);
@@ -153,7 +151,8 @@ void setup() {
   motor_left.setAcceleration(2000000000000);
   motor_right.setAcceleration(20000000000000000);
 
-  myPid.SetOutputLimits(-3250 , 3250);
+  myPid.SetOutputLimits(-3250 , 3250);\
+  
   myPid.SetMode(AUTOMATIC);
 
   timer = micros();
@@ -288,21 +287,37 @@ void loop() {
   kalAngleX = kalmanX.getAngle(roll, gyroXrate, dt);  // Calculate the angle using a Kalman filter
 #endif
 
-  gyroXangle += gyroXrate * dt;
-  //gyroXangle += kalmanX.getRate() * dt; // Calculate gyro angle using the unbiased rate
-  //gyroYangle += kalmanY.getRate() * dt;
-
-  compAngleX = 0.93 * (compAngleX + gyroXrate * dt) + 0.07 * roll;
-
-  // Reset the gyro angle when it has drifted too much
-  if (gyroXangle < -180 || gyroXangle > 180)
-    gyroXangle = kalAngleX;
+ 
   pid_input = kalAngleX;
+    if(my_bt.available()){
+      control = my_bt.read();
+      if(control == 'f' || control == 'b' || control == 's' || control == 'r')
+      set = true;
+    }
 
+  
+  if( control == 'f' && set){
+      setpoint = fixed_set_point -1.62;
+      set = false;
+  }
+ 
+  if( control == 'b' && set){
+      setpoint = fixed_set_point +1.62;
+      set = false;
+  }
 
-  //Serial.println(kalAngleX);
-  float test = abs(kalAngleX - setpoint);
+  if( control == 's' && set){
+      setpoint = fixed_set_point;
+      turn =0;
+      set = false;
+  }
 
+  if( control == 'r' && set){
+      setpoint = fixed_set_point;
+      turn +=130;
+      if (turn > pid_output) turn = 0;
+      set = false;
+  }
 
 
    myPid.Compute();
@@ -311,10 +326,10 @@ void loop() {
   
 
   
-    motor_right.setSpeed(pid_output);
+  motor_right.setSpeed(pid_output - turn);
     //motor_right.moveTo(test * (200.0 / 360));
 
-    motor_left.setSpeed(-pid_output);
+  motor_left.setSpeed(-1*(pid_output+turn));
 
     //motor_left.moveTo(test * (200.0 / 360));
 
@@ -327,5 +342,5 @@ void loop() {
 
 
   /* Print Data */
-  //Serial.println(pid_output);
+  //Serial.println(kalAngleX);
 }
